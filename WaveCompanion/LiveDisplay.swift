@@ -4,13 +4,14 @@ import UIKit
 import ImageIO
 
 struct TrackDeck: Decodable { let id: Int; let title: String?; let artist: String?; let bpm: Double? }
-struct TrackMetadata: Decodable { let status: String; let decks: [TrackDeck] }
+struct TrackMotion: Decodable { let state: String; let validForMs: Double }
+struct TrackMetadata: Decodable { let status: String; let decks: [TrackDeck]; let motion: TrackMotion? }
 struct TransferState: Decodable {
     let enabled: Bool; let status: String; let geometryRevision: Int; let cropRevision: Int
     let ageMs: Double?; let unchanged: Bool?
 }
 struct SourceStatus: Decodable { let status: String }
-struct CapturePerformance: Decodable { let targetFps: Int? }
+struct CapturePerformance: Decodable { let targetFps: Int?; let metricsVersion: Int? }
 struct DisplayState: Decodable {
     let mode: String?; let transfer: TransferState; let native: SourceStatus
     let trackInfo: TrackMetadata?; let performance: CapturePerformance?
@@ -38,6 +39,42 @@ struct FrameIdentity {
 
 private func monotonicNow() -> Double { ProcessInfo.processInfo.systemUptime }
 private enum LocalRequestError: Error { case invalid, authentication, status }
+
+enum FrameFetchOutcome { case accepted, unchanged, failed, inactive }
+enum FrameFetchPacing {
+    static func delay(after outcome: FrameFetchOutcome, elapsed: Double) -> Double {
+        switch outcome {
+        // Capture and long-polling already pace valid frames. This is only a
+        // 120-request/s upper bound for unexpectedly immediate responses.
+        case .accepted: return max(0, 1.0 / 120.0 - elapsed)
+        case .unchanged: return max(0, 0.05 - elapsed)
+        case .failed: return max(0, 0.1 - elapsed)
+        case .inactive: return 0.25
+        }
+    }
+}
+
+/// Short-lived play-rate evidence; no audio or waveform reconstruction.
+/// Time is counted only with a visible, foreground stream. The first frame
+/// after visibility resumes establishes the interval and is not counted twice.
+struct MovingPlaybackCounter {
+    private(set) var milliseconds: Double = 0
+    private(set) var frames = 0
+    private var since: Double?
+    private var deadline: Double = 0
+    mutating func update(at now: Double, visible: Bool, evidenceForMs: Double? = nil) {
+        if let start = since { milliseconds += max(0, min(now, deadline) - start) * 1000 }
+        if let evidence = evidenceForMs {
+            deadline = now + (evidence.isFinite ? min(500, max(0, evidence)) : 0) / 1000
+        }
+        since = visible && now < deadline ? now : nil
+    }
+    mutating func recordFrame(at now: Double, visible: Bool) {
+        let measured = since != nil && visible && now < deadline
+        update(at: now, visible: visible)
+        if measured { frames += 1 }
+    }
+}
 
 /// Every request is built from the validated local origin. Redirects are
 /// refused before a bearer credential can follow a different server.
@@ -83,7 +120,6 @@ final class NativeFrameRenderer {
     func show(_ image: CGImage) { last = image; view?.image = UIImage(cgImage: image) }
     func clear() { last = nil; view?.image = nil }
 }
-
 @MainActor
 final class NativeImageSurface: UIView {
     let imageView = UIImageView()
@@ -95,7 +131,6 @@ final class NativeImageSurface: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func layoutSubviews() { super.layoutSubviews(); imageView.frame = bounds }
 }
-
 @MainActor
 struct NativeFrameView: UIViewRepresentable {
     let renderer: NativeFrameRenderer
@@ -139,6 +174,7 @@ final class CompanionClient: ObservableObject {
     private let metricID = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(16)
     private var frames = 0, skipped = 0, samples = 0, foregroundMs: Double = 0
     private var requestMs: Double = 0, decodeMs: Double = 0, drawMs: Double = 0, visibleAt: Double?
+    private var movingPlayback = MovingPlaybackCounter()
     private var rateAt = monotonicNow(), rateFrames = 0
     init(link: ConnectionLink) { transport = MacTransport(link: link) }
     deinit { transport.close() }
@@ -155,6 +191,7 @@ final class CompanionClient: ObservableObject {
         tasks = [Task { await stateLoop() }, Task { await frameLoop() }, Task { await metricsLoop() }, Task { await healthLoop() }]
     }
     func setForeground(_ value: Bool) {
+        movingPlayback.update(at: monotonicNow(), visible: false)
         foreground = value
         if !value { clearFrame(); message = "Anzeige pausiert" }
         else { stateAt = 0; message = "Mac-Verbindung wird aktualisiert …" }
@@ -162,12 +199,12 @@ final class CompanionClient: ObservableObject {
     func stop() {
         stopped = true; tasks.forEach { $0.cancel() }; tasks.removeAll(); clearFrame(); transport.close()
     }
-    private func updateVisibleTime() {
-        let now = monotonicNow()
+    private func updateVisibleTime(at now: Double = monotonicNow()) {
         if let since = visibleAt { foregroundMs += max(0, now - since) * 1000 }
         visibleAt = foreground && imageVisible ? now : nil
     }
     private func clearFrame() {
+        movingPlayback.update(at: monotonicNow(), visible: false)
         updateVisibleTime(); imageVisible = false; visibleAt = nil
         generation += 1; sequence = 0; frameAt = 0; renderer.clear()
     }
@@ -175,13 +212,19 @@ final class CompanionClient: ObservableObject {
         while !Task.isCancelled && !stopped {
             if foreground && !expired {
                 do {
+                    let requestedAt = monotonicNow()
                     let (data, response) = try await transport.request("/api/state")
                     guard response.statusCode == 200, data.count <= 128 * 1024,
                           response.value(forHTTPHeaderField: "Content-Type")?.hasPrefix("application/json") == true else { throw LocalRequestError.status }
                     let next = try JSONDecoder().decode(DisplayState.self, from: data)
                     if state?.transfer.geometryRevision != next.transfer.geometryRevision || state?.transfer.cropRevision != next.transfer.cropRevision
                         || !next.transfer.enabled || !["live", "waiting"].contains(next.transfer.status) { clearFrame() }
-                    state = next; stateAt = monotonicNow()
+                    let receivedAt = monotonicNow()
+                    state = next; stateAt = receivedAt
+                    let motion = next.trackInfo?.motion
+                    let evidence = next.mode != "demo" && next.trackInfo?.status == "connected" && motion?.state == "moving"
+                        ? max(0, (motion?.validForMs ?? 0) - (receivedAt - requestedAt) * 1000) : 0
+                    movingPlayback.update(at: receivedAt, visible: foreground && imageVisible && canReceive, evidenceForMs: evidence)
                     if !next.transfer.enabled { message = "Warte auf den Wellenformausschnitt vom Mac" }
                     else if next.transfer.status == "stale" { message = "Serato-Aufnahme pausiert" }
                 } catch LocalRequestError.authentication {
@@ -197,28 +240,30 @@ final class CompanionClient: ObservableObject {
     private func frameLoop() async {
         while !Task.isCancelled && !stopped {
             let began = monotonicNow()
+            var outcome = FrameFetchOutcome.inactive
             if canReceive {
+                outcome = .failed
                 let owner = generation, after = sequence
                 do {
                     let (data, response) = try await transport.request("/api/frame", query: [URLQueryItem(name: "after", value: String(after)), URLQueryItem(name: "wait", value: "1")])
                     if response.statusCode == 200 {
-                        await acceptFrame(data, response, began: began, owner: owner)
-                    }
+                        outcome = await acceptFrame(data, response, began: began, owner: owner) ? .accepted : .failed
+                    } else if response.statusCode == 204 { outcome = .unchanged }
                 } catch LocalRequestError.authentication {
                     expired = true; clearFrame(); message = "Bitte den aktuellen Mac-QR-Code scannen."
                 } catch { /* State freshness determines whether the last picture remains usable. */ }
             }
-            let target = state?.performance?.targetFps == 60 ? 60.0 : 30.0
-            let delay = foreground ? max(0.001, 1 / target - (monotonicNow() - began)) : 0.25
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            let delay = FrameFetchPacing.delay(after: outcome, elapsed: monotonicNow() - began)
+            if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+            else { await Task.yield() }
         }
     }
-    private func acceptFrame(_ data: Data, _ response: HTTPURLResponse, began: Double, owner: Int) async {
+    private func acceptFrame(_ data: Data, _ response: HTTPURLResponse, began: Double, owner: Int) async -> Bool {
         let requested = monotonicNow()
         guard data.count >= 16, data.count <= 2 * 1024 * 1024,
               response.value(forHTTPHeaderField: "Content-Type")?.hasPrefix("image/jpeg") == true,
               let frame = FrameIdentity(response: response), matches(frame, owner),
-              let image = await decodeJPEG(data), matches(frame, owner), !Task.isCancelled else { return }
+              let image = await decodeJPEG(data), matches(frame, owner), !Task.isCancelled else { return false }
         let number = frame.sequence
         let decoded = monotonicNow()
         if sequence > 0 && decoded - frameAt < 2 { skipped += max(0, number - sequence - 1) }
@@ -226,10 +271,13 @@ final class CompanionClient: ObservableObject {
         sequence = number; frameAt = drawn; frames += 1; rateFrames += 1
         requestMs += (requested - began) * 1000; decodeMs += (decoded - requested) * 1000; drawMs += (drawn - decoded) * 1000
         if !imageVisible { imageVisible = true; visibleAt = drawn }
+        movingPlayback.recordFrame(at: drawn, visible: foreground && imageVisible && canReceive)
         if drawn - rateAt >= 1 { submittedFps = Int((Double(rateFrames) / (drawn - rateAt)).rounded()); rateAt = drawn; rateFrames = 0 }
+        return true
     }
     private func healthLoop() async {
         while !Task.isCancelled && !stopped {
+            movingPlayback.update(at: monotonicNow(), visible: foreground && imageVisible && canReceive)
             if foreground && !expired {
                 if !fresh && state != nil { clearFrame(); message = "Mac-Verbindung unterbrochen. Helfer und WLAN prüfen." }
                 else if imageVisible && !unchanged && (monotonicNow() - frameAt > 1.8 || (state?.transfer.ageMs ?? 0) > 1800) {
@@ -243,9 +291,15 @@ final class CompanionClient: ObservableObject {
         while !Task.isCancelled && !stopped {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard !Task.isCancelled, !stopped, foreground, fresh else { continue }
-            updateVisibleTime(); guard foregroundMs >= 1000 else { continue }; samples += 1
-            let values: [String: Any] = ["clientId": String(metricID), "sample": samples, "foregroundMs": foregroundMs,
+            let measuredAt = monotonicNow()
+            updateVisibleTime(at: measuredAt); guard foregroundMs >= 1000 else { continue }; samples += 1
+            movingPlayback.update(at: measuredAt, visible: foreground && imageVisible && canReceive)
+            var values: [String: Any] = ["clientId": String(metricID), "sample": samples, "foregroundMs": foregroundMs,
                 "frames": frames, "skipped": skipped, "requestMs": requestMs, "decodeMs": decodeMs, "renderWaitMs": 0, "drawMs": drawMs]
+            if state?.performance?.metricsVersion == 2 {
+                values["movingMs"] = min(foregroundMs, movingPlayback.milliseconds)
+                values["movingFrames"] = movingPlayback.frames
+            }
             if let data = try? JSONSerialization.data(withJSONObject: values) { _ = try? await transport.request("/api/client-metrics", body: data) }
         }
     }

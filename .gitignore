@@ -1,0 +1,13 @@
+# Local Apple build and workspace state
+.DS_Store
+DerivedData/
+.build/
+**/xcuserdata/
+*.xcuserstate
+*.mobileprovision
+*.p12
+
+# Generated helper reports and local dependency state
+**/node_modules/
+**/window-report*.json
+**/window-report*.json.*.tmp

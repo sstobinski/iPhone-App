@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#090e15">
+  <meta name="referrer" content="no-referrer">
+  <title>Serato · Fenster-Test</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body data-role="waiting">
+  <header class="topbar">
+    <div class="brand"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M3 11v6m5-11v16m6-20v24m6-18v12m5-9v6"/></svg><div><h1 id="page-title">Serato Live</h1><p id="version">FENSTER-TEST · EXPERIMENTELL</p></div></div>
+    <div class="top-actions"><span id="connection-state" class="connection-state" data-state="waiting"><i aria-hidden="true"></i><span id="connection-label">Mac-Verbindung …</span></span><button id="fullscreen" class="icon-button" type="button" aria-label="Vollbild öffnen" title="Vollbild" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m8 0h5v-5"/></svg></button></div>
+  </header>
+  <div id="demo-banner" class="demo-banner" hidden>DEMO · Synthetische Testbilder, keine Serato-Aufnahme</div>
+  <main id="app" class="app">
+    <section id="startup-note" class="startup-note" role="status">Verbindungslink vom Mac öffnen.</section>
+    <section id="admin-view" class="admin-view" aria-label="Lokale Einrichtung auf dem Mac" hidden>
+      <div class="setup-intro"><div><p class="eyebrow">AUF DIESEM MAC</p><h2>Serato-Bereich prüfen</h2></div><span id="capture-state" class="capture-state">Warte auf Serato</span></div>
+      <p id="capture-help" class="setup-copy">Serato öffnen und die Wellenformansicht einrichten. Der Mac-Helfer sucht das Fenster und die Anzeigebereiche.</p>
+      <div class="setup-grid">
+        <section class="source-card" aria-label="Serato-Fenstervorschau nur auf dem Mac">
+          <div class="card-heading"><h3>Serato-Fenster · Vorschau</h3><span class="private-label">Nur auf dem Mac</span></div>
+          <div id="source-stage" class="source-stage"><canvas id="source-canvas" width="960" height="540" aria-label="Lokale Serato-Fenstervorschau mit erkanntem oder manuell gewähltem Ausschnitt"></canvas><div id="source-empty" class="source-empty"><span aria-hidden="true">∿</span><p>Warte auf das Serato-Fenster</p></div></div>
+          <p class="detection-label">Hier bleibt das ganze Fenster sichtbar. Nur der markierte Ausschnitt wird auf das iPhone übertragen.</p>
+          <p id="detection-label" class="detection-label" role="status">Bereichserkennung wartet auf ein Bild.</p>
+          <div class="source-actions"><button id="auto-detect" class="primary" type="button">Automatisch erkennen</button><button id="manual-select" type="button" aria-pressed="false">Ausschnitt wählen</button><button id="apply-crop" type="button" disabled>Ausschnitt übernehmen</button><button id="save-preview" type="button" title="Speichert das ganze Serato-Fenster als JPEG auf diesem Mac.">Vorschaubild speichern</button><button id="stop-transfer" class="stop-button" type="button" disabled>Übertragung stoppen</button></div>
+          <p id="action-status" class="action-status" role="status" aria-live="polite"></p>
+        </section>
+        <aside class="connect-card" aria-labelledby="connect-title"><p class="eyebrow">IPHONE VERBINDEN</p><h3 id="connect-title">Gleiches WLAN. QR-Code scannen.</h3><div class="qr-frame"><img id="connection-qr" alt="QR-Code zum lokalen Bildstrom dieses Macs" hidden><p id="qr-message">Verbindungslink wird geladen …</p></div><label for="network-choice">Verbindung</label><select id="network-choice" hidden></select><div class="link-row"><input id="connection-url" type="text" readonly spellcheck="false" aria-label="Verbindungslink zum iPhone"><button id="copy-link" type="button">Kopieren</button></div><p id="connection-help" class="small-note" role="status">Der Mac-Helfer und das Terminal bleiben während der Übertragung geöffnet.</p></aside>
+      </div>
+    </section>
+    <section id="phone-view" class="phone-view" aria-label="Übertragener Serato-Ausschnitt">
+      <div class="picture-heading"><span id="phone-view-label">Wellenformübertragung</span><span id="frame-rate">— Bilder/s</span></div>
+      <div id="track-info" class="track-info" aria-label="Trackdaten der beiden Decks" hidden>
+        <div class="deck-info" data-deck="1"><div class="deck-copy"><span class="deck-label">DECK 1</span><span id="track-title-1" class="track-title">—</span><span id="track-artist-1" class="track-artist"></span></div><div class="deck-tempo"><strong id="track-bpm-1">—</strong><span>BPM</span></div></div>
+        <div class="deck-info" data-deck="2"><div class="deck-copy"><span class="deck-label">DECK 2</span><span id="track-title-2" class="track-title">—</span><span id="track-artist-2" class="track-artist"></span></div><div class="deck-tempo"><strong id="track-bpm-2">—</strong><span>BPM</span></div></div>
+      </div><p id="track-info-status" class="track-info-status" role="status" hidden></p>
+      <div id="phone-stage" class="phone-stage" data-state="waiting"><canvas id="phone-canvas" width="960" height="540" aria-label="Live-Bild des ausgewählten Serato-Wellenformbereichs" hidden></canvas><div id="phone-overlay" class="phone-overlay"><span class="wave-symbol" aria-hidden="true">∿</span><h2 id="phone-status-title">Warte auf den Mac</h2><p id="phone-status-copy">Serato öffnen und die Fensteraufnahme am Mac freigeben.</p></div></div>
+      <div class="picture-footer"><span id="transfer-note">Bildübertragung · ohne Ton</span><span id="frame-size">—</span></div>
+    </section>
+  </main>
+</body>
+</html>
