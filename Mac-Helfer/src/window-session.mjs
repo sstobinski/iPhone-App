@@ -1,6 +1,7 @@
 import { inspectWindowJpeg } from './jpeg.mjs';
 import { readCaptureDimensions } from './capture-geometry.mjs';
 import { FrameRateMeter } from './performance.mjs';
+import { readPlatterRegions, platterPresentation } from './platter-layout.mjs';
 
 const LAYOUTS = new Set(['horizontal-two-deck', 'vertical-two-deck']);
 const DETECTOR_REASONS = new Set(['IMAGE_INVALID', 'IMAGE_TOO_LARGE', 'NO_WAVEFORM_PAIR',
@@ -13,6 +14,8 @@ const safeInteger = value => Number.isSafeInteger(value) && value >= 0;
 const increment = value => Math.min(Number.MAX_SAFE_INTEGER, value + 1);
 const safeCode = value => typeof value === 'string' && /^CAPTURE_[A-Z_]{1,60}$/.test(value) ? value : null;
 const copyCrop = value => value ? { x: value.x, y: value.y, width: value.width, height: value.height } : null;
+const copyPlatters = value => value?.map(copyCrop) ?? null;
+const samePlatters = (one, two) => !one && !two || one && two && one.every((r, i) => cropIou(r, two[i]) >= .80);
 const rejected = errorCode => ({ ok: false, errorCode });
 
 function validCrop(crop, source = null) {
@@ -76,7 +79,7 @@ export class WindowSession {
   #stats = { analysisFramesReceived: 0, framesReceived: 0, framesPublished: 0,
     framesRejected: 0, identicalFramesSkipped: 0, frameWaits: 0, frameWaitTimeouts: 0, frameWaitsCancelled: 0,
     analysesStarted: 0, analysesCompleted: 0, analysesDiscarded: 0,
-    analysisFailures: 0, analysisFramesSkipped: 0, autoRecognitions: 0,
+    analysisFailures: 0, analysisFramesSkipped: 0, autoRecognitions: 0, platterCropsApplied: 0, lastPlatterCount: 0,
     autoCropsApplied: 0, manualCropsApplied: 0, geometryChanges: 0,
     cropRequests: 0, cropAcksIgnored: 0, stops: 0, autoRestarts: 0,
     sourcePauses: 0, invalidPackets: 0, lastEncodeMs: 0,
@@ -176,8 +179,8 @@ export class WindowSession {
       }
       // Reject an accidental whole-window image labelled as a cropped frame.
       // Compare against capture pixels, never the smaller analysis JPEG.
-      if (Math.abs(header.width - active.crop.width * active.sourceWidth) > 2
-        || Math.abs(header.height - active.crop.height * active.sourceHeight) > 2) {
+      if (Math.abs(header.width - (active.captureCrop ?? active.crop).width * active.sourceWidth) > 2
+        || Math.abs(header.height - (active.captureCrop ?? active.crop).height * active.sourceHeight) > 2) {
         this.#stats.framesRejected++; return false;
       }
       this.#nativeFrameSequence = header.sequence;
@@ -296,16 +299,19 @@ export class WindowSession {
       this.#clearTransfer(); this.#clearNative();
     }
     const crop = copyCrop(result.crop);
-    if (this.#active && this.#active.layout === result.layout && cropIou(this.#active.crop, crop) >= .9) {
+    const observed = readPlatterRegions(result.platters);
+    const platters = observed && platterPresentation(crop, observed) ? observed : null;
+    if (this.#active && this.#active.layout === result.layout && cropIou(this.#active.crop, crop) >= .9 && samePlatters(this.#active.platters, platters)) {
       this.#detection = { status: 'recognized', layout: result.layout, confidence: result.confidence,
         crop: copyCrop(this.#active.crop), reason: this.#stats.lastAutoReason };
       return;
     }
-    if (this.#candidate?.layout === result.layout && cropIou(this.#candidate.crop, crop) >= .85) {
+    if (this.#candidate?.layout === result.layout && cropIou(this.#candidate.crop, crop) >= .85 && samePlatters(this.#candidate.platters, platters)) {
       this.#candidate = { layout: result.layout, crop: cropUnion(this.#candidate.crop, crop),
+        platters: platters && platters.map((r, i) => cropUnion(this.#candidate.platters[i], r)),
         count: this.#candidate.count + 1, confidence: Math.min(this.#candidate.confidence, result.confidence) };
     } else {
-      this.#candidate = { layout: result.layout, crop, count: 1, confidence: result.confidence };
+      this.#candidate = { layout: result.layout, crop, platters: copyPlatters(platters), count: 1, confidence: result.confidence };
     }
     this.#detection = { status: 'searching', layout: result.layout, confidence: result.confidence,
       crop: copyCrop(this.#candidate.crop), reason: 'WAITING_FOR_STABLE_LAYOUT' };
@@ -313,22 +319,25 @@ export class WindowSession {
     const candidate = this.#candidate;
     this.#detection = { status: 'recognized', layout: candidate.layout, confidence: candidate.confidence,
       crop: copyCrop(candidate.crop), reason: this.#stats.lastAutoReason };
-    if (this.#pending && this.#pending.layout === candidate.layout && cropIou(this.#pending.crop, candidate.crop) >= .9) return;
+    if (this.#pending && this.#pending.layout === candidate.layout && cropIou(this.#pending.crop, candidate.crop) >= .9 && samePlatters(this.#pending.platters, candidate.platters)) return;
     this.#stats.autoRecognitions++;
-    this.#requestCrop(candidate.crop, candidate.layout, 'auto');
+    this.#requestCrop(candidate.crop, candidate.layout, 'auto', candidate.platters);
   }
 
-  #requestCrop(crop, layout, requestedMode) {
+  #requestCrop(crop, layout, requestedMode, platters = null) {
     const source = this.#source;
     if (this.#closed || this.#blocked || this.#paused || !source || !validCrop(crop, source)
       || this.#requestId === Number.MAX_SAFE_INTEGER) return rejected('WINDOW_CROP_UNAVAILABLE');
-    const pending = { requestId: ++this.#requestId, geometryRevision: this.#geometry,
+    const plan = platterPresentation(crop, platters);
+    this.#stats.lastPlatterCount = plan ? 2 : 0;
+    if (plan) this.#stats.platterCropsApplied++;
+    const pending = { ...(plan ? { captureCrop: copyCrop(plan.capture), platters: copyPlatters(platters), presentation: plan.presentation } : {}), requestId: ++this.#requestId, geometryRevision: this.#geometry,
       crop: copyCrop(crop), layout, sourceWidth: source.captureWidth, sourceHeight: source.captureHeight };
     this.#mode = requestedMode; this.#clearTransfer(); this.#pending = pending;
     this.#stats.cropRequests++;
     let accepted = false;
     try { accepted = this.#native.sendCrop({ requestId: pending.requestId,
-      geometryRevision: pending.geometryRevision, crop: copyCrop(pending.crop) }) === true; }
+      geometryRevision: pending.geometryRevision, crop: copyCrop(pending.captureCrop ?? pending.crop) }) === true; }
     catch { /* No provider details escape. */ }
     if (!accepted) {
       this.#pending = null; this.#active = null;
@@ -406,14 +415,15 @@ export class WindowSession {
     const source = this.getSourceFrame(), frame = this.getPhoneFrame();
     const enabled = !this.#closed && this.#mode !== 'stopped' && (this.#active !== null || this.#pending !== null);
     const stale = this.#paused || this.#blocked || enabled && this.#lastActivity !== null && this.#age(this.#lastActivity) > this.#freshForMs;
-    return { version: '0.1.13', native: { ...this.#nativeState },
+    return { version: '0.2.0', native: { ...this.#nativeState },
       source: { available: source !== null, width: source?.width ?? 0, height: source?.height ?? 0,
         sequence: this.#sourceSequence, geometryRevision: this.#geometry, ageMs: source?.ageMs ?? null },
       detection: { ...this.#detection, crop: copyCrop(this.#detection.crop) },
       transfer: { enabled, status: this.#mode === 'stopped' || this.#closed ? 'stopped'
         : stale && enabled ? 'stale' : frame ? 'live' : 'waiting', sequence: this.#phoneSequence,
         width: frame?.width ?? 0, height: frame?.height ?? 0, geometryRevision: this.#geometry,
-        cropRevision: this.#active?.cropRevision ?? 0, ageMs: frame?.ageMs ?? null, unchanged: this.#phoneUnchanged },
+        cropRevision: this.#active?.cropRevision ?? 0,
+        presentation: this.#active?.presentation ? structuredClone(this.#active.presentation) : null, ageMs: frame?.ageMs ?? null, unchanged: this.#phoneUnchanged },
       metrics: { ...this.#stats, ...this.#frameRate.read(this.#time()) } };
   }
   getStats() {

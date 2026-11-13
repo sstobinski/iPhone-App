@@ -56,7 +56,7 @@ async function main() {
       for (const close of [() => server.close(), () => capture?.stop(), () => analyzer.close(), () => metadata.stop(), () => buildTask]) {
         try { await close(); } catch { errors.push('CAPTURE_CLEANUP_FAILED'); }
       }
-      const report = { schemaVersion: 1, programVersion: '0.1.13', kind: 'native-window-test',
+      const report = { schemaVersion: 1, programVersion: '0.2.0', kind: 'native-window-test',
         mode: options.demo ? 'demo' : 'live', endedReason: reason,
         runtime: { platform: process.platform, arch: process.arch, node: process.versions.node },
         durationSeconds: (performance.now() - began) / 1000,
@@ -84,7 +84,7 @@ async function main() {
   function onKey(value) { if (/[qQ\u0003]/.test(String(value))) void finish('user'); }
   process.on('SIGINT', onSignal); process.on('SIGTERM', onSignal);
   if (process.stdin.isTTY) { process.stdin.resume(); process.stdin.on('data', onKey); }
-  process.stdout.write(`Serato Fenster-Test 0.1.13 · ${options.fps} FPS Ziel${options.demo ? ' — DEMO, synthetische Bilder' : ''}\n`);
+  process.stdout.write(`Serato Fenster-Test 0.2.0 · ${options.fps} FPS Ziel${options.demo ? ' — DEMO, synthetische Bilder' : ''}\n`);
   try {
     const connection = await server.start();
     if (stopping) return await finished;
