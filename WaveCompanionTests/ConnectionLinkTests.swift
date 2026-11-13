@@ -43,7 +43,7 @@ final class NativeProtocolTests: XCTestCase {
         XCTAssertFalse(frame.isOwned(by: nil, after: 11))
     }
     func testMetadataPayloadAndMalformedFrameHeaders() throws {
-        let value = try state(); XCTAssertEqual(value.trackInfo?.decks.first?.bpm, 86.2)
+        let value = try state(); XCTAssertEqual(value.trackInfo?.decks.first?.artist, "Artist")
         for sequence in ["0","01","-1","1.5","9007199254740992"] {
             let response = try XCTUnwrap(HTTPURLResponse(url: URL(string: "http://192.168.1.1:5000/api/frame")!, statusCode: 200,
                 httpVersion: nil, headerFields: ["X-Frame-Sequence":sequence,"X-Frame-Geometry":"1","X-Frame-Crop":"2"]))
@@ -95,5 +95,22 @@ final class NativePerformanceTests: XCTestCase {
         counter.recordFrame(at: 0.4, visible: true)
         XCTAssertEqual(counter.frames, 1)
         XCTAssertEqual(counter.milliseconds, 200, accuracy: 0.000001)
+    }
+}
+
+final class PlatterPresentationTests: XCTestCase {
+    func testRelativeRegionsUseTopOriginAndStayInsideTheDecodedFrame() throws {
+        let region = FrameRegion(x: 0.25, y: 0.125, width: 0.5, height: 0.25)
+        let pixels = try XCTUnwrap(region.pixels(width: 1000, height: 500))
+        XCTAssertEqual(pixels.origin.x, 250); XCTAssertEqual(pixels.origin.y, 62)
+        XCTAssertEqual(pixels.width, 500); XCTAssertEqual(pixels.height, 126)
+        XCTAssertNil(FrameRegion(x: -0.1, y: 0, width: 0.2, height: 0.2).pixels(width: 1000, height: 500))
+        XCTAssertNil(FrameRegion(x: 0, y: 0, width: 1.5, height: 0.2).pixels(width: 1000, height: 500))
+    }
+    func testExactlyTwoValidPlatterRegionsAreRequired() {
+        let region = FrameRegion(x: 0, y: 0, width: 0.5, height: 0.5)
+        XCTAssertTrue(FramePresentation(kind: "platters-and-waveforms", waveform: region, platters: [region, region]).valid)
+        XCTAssertFalse(FramePresentation(kind: "platters-and-waveforms", waveform: region, platters: [region]).valid)
+        XCTAssertFalse(FramePresentation(kind: "unknown", waveform: region, platters: [region, region]).valid)
     }
 }

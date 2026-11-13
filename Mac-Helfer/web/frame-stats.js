@@ -53,3 +53,27 @@ export function nextPaint({ schedule = typeof globalThis.requestAnimationFrame =
     token = schedule(() => finish(true));
   });
 }
+
+/** Show regions from one decoded JPEG. All three canvases are updated in the
+ * same paint callback; no extra captures or independent frame queues. */
+export function paintPresentation(canvas, context, platters, bitmap, metadata, presentation) {
+  if (!presentation) { paintFrame(canvas, context, bitmap, metadata); return false; }
+  const valid = r => r && ['x', 'y', 'width', 'height'].every(k => Number.isFinite(r[k])) && r.x >= 0 && r.y >= 0 && r.width > 0 && r.height > 0 && r.x + r.width <= 1.000001 && r.y + r.height <= 1.000001;
+  if (presentation.kind !== 'platters-and-waveforms' || !valid(presentation.waveform) || presentation.platters?.length !== 2 || !presentation.platters.every(valid)) throw new Error('FRAME_PRESENTATION_INVALID');
+  const regions = [presentation.waveform, ...presentation.platters];
+  const targets = [{ canvas, context }, ...platters];
+  const pixels = regions.map(r => {
+    const x = Math.floor(r.x * metadata.width), y = Math.floor(r.y * metadata.height);
+    const width = Math.min(metadata.width, Math.ceil((r.x + r.width) * metadata.width)) - x;
+    const height = Math.min(metadata.height, Math.ceil((r.y + r.height) * metadata.height)) - y;
+    if (width < 2 || height < 2) throw new Error('FRAME_PRESENTATION_INVALID');
+    return { x, y, width, height };
+  });
+  for (let i = 0; i < pixels.length; i++) {
+    const { x, y, width, height } = pixels[i], target = targets[i];
+    if (target.canvas.width !== width) target.canvas.width = width;
+    if (target.canvas.height !== height) target.canvas.height = height;
+    target.context?.drawImage(bitmap, x, y, width, height, 0, 0, width, height);
+  }
+  return true;
+}

@@ -3,12 +3,31 @@ import SwiftUI
 import UIKit
 import ImageIO
 
-struct TrackDeck: Decodable { let id: Int; let title: String?; let artist: String?; let bpm: Double? }
+struct TrackDeck: Decodable { let id: Int; let title: String?; let artist: String? }
 struct TrackMotion: Decodable { let state: String; let validForMs: Double }
 struct TrackMetadata: Decodable { let status: String; let decks: [TrackDeck]; let motion: TrackMotion? }
+struct FrameRegion: Decodable {
+    let x: Double; let y: Double; let width: Double; let height: Double
+    var valid: Bool {
+        [x, y, width, height].allSatisfy { $0.isFinite } && x >= 0 && y >= 0 && width > 0 && height > 0
+            && x + width <= 1.000001 && y + height <= 1.000001
+    }
+    func pixels(width imageWidth: Int, height imageHeight: Int) -> CGRect? {
+        guard valid else { return nil }
+        let left = max(0, Int(floor(x * Double(imageWidth)))), top = max(0, Int(floor(y * Double(imageHeight))))
+        let right = min(imageWidth, Int(ceil((x + width) * Double(imageWidth))))
+        let bottom = min(imageHeight, Int(ceil((y + height) * Double(imageHeight))))
+        guard right - left >= 2, bottom - top >= 2 else { return nil }
+        return CGRect(x: CGFloat(left), y: CGFloat(top), width: CGFloat(right - left), height: CGFloat(bottom - top))
+    }
+}
+struct FramePresentation: Decodable {
+    let kind: String; let waveform: FrameRegion; let platters: [FrameRegion]
+    var valid: Bool { kind == "platters-and-waveforms" && waveform.valid && platters.count == 2 && platters.allSatisfy { $0.valid } }
+}
 struct TransferState: Decodable {
     let enabled: Bool; let status: String; let geometryRevision: Int; let cropRevision: Int
-    let ageMs: Double?; let unchanged: Bool?
+    let ageMs: Double?; let unchanged: Bool?; let presentation: FramePresentation?
 }
 struct SourceStatus: Decodable { let status: String }
 struct CapturePerformance: Decodable { let targetFps: Int?; let metricsVersion: Int? }
@@ -114,12 +133,34 @@ private final class MacTransport: NSObject, URLSessionTaskDelegate, @unchecked S
 
 @MainActor
 final class NativeFrameRenderer {
-    private weak var view: UIImageView?
-    private var last: CGImage?
-    func attach(_ view: UIImageView) { if self.view !== view { self.view = view; view.image = last.map { UIImage(cgImage: $0) } } }
-    func show(_ image: CGImage) { last = image; view?.image = UIImage(cgImage: image) }
-    func clear() { last = nil; view?.image = nil }
+    private weak var waveformView: UIImageView?
+    private weak var deck1View: UIImageView?
+    private weak var deck2View: UIImageView?
+    private var images: [UIImage?] = [nil, nil, nil]
+    func attach(_ view: UIImageView, part: FramePart) {
+        if part != .waveform && waveformView === view { waveformView = nil }
+        if part != .deck1 && deck1View === view { deck1View = nil }
+        if part != .deck2 && deck2View === view { deck2View = nil }
+        switch part { case .waveform: waveformView = view; case .deck1: deck1View = view; case .deck2: deck2View = view }
+        if view.image !== images[part.rawValue] { view.image = images[part.rawValue] }
+    }
+    func show(_ image: CGImage, presentation: FramePresentation?) -> Bool {
+        if let presentation = presentation {
+            guard presentation.valid else { return false }
+            let regions = [presentation.waveform] + presentation.platters
+            let parts = regions.compactMap { region -> UIImage? in
+                guard let rect = region.pixels(width: image.width, height: image.height), let crop = image.cropping(to: rect) else { return nil }
+                return UIImage(cgImage: crop)
+            }
+            guard parts.count == 3 else { return false }
+            images = parts.map { Optional($0) }
+        } else { images = [UIImage(cgImage: image), nil, nil] }
+        waveformView?.image = images[0]; deck1View?.image = images[1]; deck2View?.image = images[2]
+        return true
+    }
+    func clear() { images = [nil, nil, nil]; waveformView?.image = nil; deck1View?.image = nil; deck2View?.image = nil }
 }
+enum FramePart: Int { case waveform = 0, deck1 = 1, deck2 = 2 }
 @MainActor
 final class NativeImageSurface: UIView {
     let imageView = UIImageView()
@@ -134,10 +175,11 @@ final class NativeImageSurface: UIView {
 @MainActor
 struct NativeFrameView: UIViewRepresentable {
     let renderer: NativeFrameRenderer
+    var part: FramePart = .waveform
     func makeUIView(context: Context) -> NativeImageSurface {
-        let surface = NativeImageSurface(frame: .zero); renderer.attach(surface.imageView); return surface
+        let surface = NativeImageSurface(frame: .zero); renderer.attach(surface.imageView, part: part); return surface
     }
-    func updateUIView(_ view: NativeImageSurface, context: Context) { renderer.attach(view.imageView) }
+    func updateUIView(_ view: NativeImageSurface, context: Context) { renderer.attach(view.imageView, part: part) }
 }
 
 private func decodeJPEG(_ data: Data) async -> CGImage? {
@@ -267,7 +309,7 @@ final class CompanionClient: ObservableObject {
         let number = frame.sequence
         let decoded = monotonicNow()
         if sequence > 0 && decoded - frameAt < 2 { skipped += max(0, number - sequence - 1) }
-        renderer.show(image); let drawn = monotonicNow()
+        guard renderer.show(image, presentation: state?.transfer.presentation) else { return false }; let drawn = monotonicNow()
         sequence = number; frameAt = drawn; frames += 1; rateFrames += 1
         requestMs += (requested - began) * 1000; decodeMs += (decoded - requested) * 1000; drawMs += (drawn - decoded) * 1000
         if !imageVisible { imageVisible = true; visibleAt = drawn }
@@ -314,12 +356,16 @@ struct LiveDisplay: View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
                 if client.state?.mode == "demo" { Text("DEMO · Synthetische Bilder").font(.caption.bold()).frame(maxWidth: .infinity).padding(5).background(.orange.opacity(0.25)) }
-                HStack(spacing: 0) {
-                    deck(1, compact: geometry.size.width > geometry.size.height)
-                    Divider().overlay(.gray.opacity(0.4))
-                    deck(2, compact: geometry.size.width > geometry.size.height)
-                }.fixedSize(horizontal: false, vertical: true).background(Color(red: 0.04, green: 0.07, blue: 0.11))
-                if !client.metadataConnected { Text(client.state?.trackInfo?.status == "unavailable" ? "Trackdaten nicht verfügbar · Bildübertragung aktiv" : "Warte auf Serato-Trackdaten …").font(.caption2).foregroundStyle(.orange).padding(4) }
+                let landscape = geometry.size.width > geometry.size.height
+                let platterHeight = min(geometry.size.width / 2 - 16, geometry.size.height * (landscape ? 0.30 : 0.25))
+                if client.state?.transfer.presentation?.valid == true {
+                    HStack(spacing: 12) {
+                        NativeFrameView(renderer: client.renderer, part: .deck1).clipShape(Circle())
+                        NativeFrameView(renderer: client.renderer, part: .deck2).clipShape(Circle())
+                    }.frame(height: max(50, platterHeight)).padding(.horizontal, 8).padding(.vertical, 4)
+                } else if client.imageVisible && client.state?.mode != "demo" {
+                    Text("Platten noch nicht erkannt").font(.caption2).foregroundStyle(.secondary).padding(4)
+                }
                 NativeFrameView(renderer: client.renderer).frame(maxWidth: .infinity, maxHeight: .infinity)
                     .overlay {
                         if !client.imageVisible {
@@ -327,6 +373,12 @@ struct LiveDisplay: View {
                                 Text(client.message).font(.callout).multilineTextAlignment(.center).foregroundStyle(.secondary) }.padding(30)
                         }
                     }
+                HStack(spacing: 0) {
+                    deck(1, compact: landscape)
+                    Divider().overlay(.gray.opacity(0.4))
+                    deck(2, compact: landscape)
+                }.fixedSize(horizontal: false, vertical: true).background(Color(red: 0.04, green: 0.07, blue: 0.11))
+                if !client.metadataConnected { Text("Warte auf Titel und Interpret …").font(.caption2).foregroundStyle(.orange).padding(4) }
             }.background(.black)
         }
         .onAppear { client.start() }.onDisappear { client.stop() }
@@ -335,27 +387,17 @@ struct LiveDisplay: View {
     }
     private func deck(_ id: Int, compact: Bool) -> some View {
         let value = client.metadataConnected ? client.state?.trackInfo?.decks.first(where: { $0.id == id }) : nil
-        let tempo = formattedBPM(value?.bpm)
         let rawTitle = String((value?.title ?? "").prefix(160))
-        let title = rawTitle.isEmpty ? (client.metadataConnected ? tempo == "—" ? "Kein Track geladen" : "Trackdaten werden geladen …" : "—") : rawTitle
+        let title = rawTitle.isEmpty ? (client.metadataConnected ? "Kein Track geladen" : "—") : rawTitle
         return VStack(alignment: .leading, spacing: 4) {
             Text("DECK \(id)").font(.system(size: 9, weight: .semibold, design: .monospaced)).foregroundStyle(id == 1 ? Color.cyan : Color.pink)
             HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title).font(.system(size: compact ? 13 : 15, weight: .semibold)).lineLimit(1)
                     Text(String((value?.artist ?? "").prefix(160))).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-                    if !compact { bpm(tempo, size: 31) }
                 }.frame(maxWidth: .infinity, alignment: .leading)
-                if compact { bpm(tempo, size: 29) }
             }
-        }.padding(.horizontal, compact ? 13 : 12).padding(.vertical, compact ? 8 : 12).frame(maxWidth: .infinity, alignment: .leading)
-    }
-    private func formattedBPM(_ value: Double?) -> String {
-        guard let value = value, value.isFinite, value > 0, value <= 1000 else { return "—" }
-        return String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), value)
-    }
-    private func bpm(_ value: String, size: CGFloat) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 4) { Text(value).font(.system(size: size, weight: .bold)).monospacedDigit()
-            Text("BPM").font(.system(size: 9)).foregroundStyle(.secondary) }.fixedSize()
+        }.padding(.horizontal, compact ? 13 : 12).padding(.vertical, compact ? 8 : 12)
+            .padding(.trailing, id == 2 ? 44 : 0).frame(maxWidth: .infinity, alignment: .leading)
     }
 }

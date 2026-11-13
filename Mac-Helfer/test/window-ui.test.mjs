@@ -124,7 +124,7 @@ test('invalid response types, oversized bodies and invalid image dimensions neve
 async function browserFixture(admin = true) {
   const html = await readFile(new URL('../web/index.html', import.meta.url), 'utf8');
   const nodes = new Map(), timers = [], intervals = [], listeners = new Map(), requests = [];
-  let current = state({ admin, mode: 'demo', version: '0.1.13', transfer: { ...state().transfer, enabled: false, status: 'waiting', sequence: 0, cropRevision: 0 } });
+  let current = state({ admin, mode: 'demo', version: '0.2.0', transfer: { ...state().transfer, enabled: false, status: 'waiting', sequence: 0, cropRevision: 0 } });
   class Element {
     constructor(id) { this.id = id; this.hidden = false; this.dataset = {}; this.handlers = new Map(); this.attrs = {}; this.textContent = ''; this.value = ''; this.width = 960; this.height = 540; }
     addEventListener(name, handler) { this.handlers.set(name, handler); }
@@ -214,11 +214,11 @@ test('phone metadata is text-only, updates independently and clears on metadata 
     ] };
     await f.tick();
     assert.equal(f.nodes.get('track-title-1').textContent, '<img src=x onerror=alert(1)>');
-    assert.equal(f.nodes.get('track-bpm-1').textContent, '86.2');
-    assert.equal(f.nodes.get('track-bpm-2').textContent, '90.0');
+    assert.equal(f.nodes.has('track-bpm-1'), false);
+    assert.equal(f.nodes.has('track-bpm-2'), false);
     assert.equal(f.nodes.get('track-info-status').hidden, true);
     f.current.trackInfo.status = 'unavailable'; await f.tick();
-    assert.equal(f.nodes.get('track-title-1').textContent, '—'); assert.equal(f.nodes.get('track-bpm-1').textContent, '—');
+    assert.equal(f.nodes.get('track-title-1').textContent, '—');
     assert.match(f.nodes.get('track-info-status').textContent, /Bildübertragung bleibt aktiv/);
     assert.ok(!f.requests.some(request => request.path === '/api/source'));
   } finally { f.restore(); }

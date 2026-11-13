@@ -222,3 +222,35 @@ test('horizontal tracking context is forwarded only within the same source geome
     await send(2); assert.equal(contexts[3], null); assert.equal(session.getPhoneFrame(), null);
   } finally { session.close(); }
 });
+
+test('platter views share one approved capture and cannot survive an unacknowledged crop or geometry change', async () => {
+  const wave = { x: .43, y: .08, width: .14, height: .6 };
+  let platters = [{ x: .18, y: .2, width: .2, height: 1 / 3 }, { x: .62, y: .2, width: .2, height: 1 / 3 }];
+  const requests = [], image = (width, height) => jpeg.encode({ width, height, data: Buffer.alloc(width * height * 4, 140) }, 70).data;
+  const source = image(400, 240);
+  const session = new WindowSession({ native: { sendCrop: value => { requests.push(value); return true; }, clearCrop: () => true },
+    analyze: async () => ({ status: 'recognized', layout: 'vertical-two-deck', confidence: .9, crop: wave, platters }) });
+  const analysis = async sequence => {
+    session.acceptPacket({ header: { type: 'analysis', sequence, geometryRevision: 1, cropRevision: 0, width: 400, height: 240, captureWidth: 800, captureHeight: 480 }, jpeg: source });
+    await tick(); await tick();
+  };
+  await analysis(1); await analysis(2);
+  assert.equal(requests.length, 1);
+  assert.ok(requests[0].crop.width > wave.width); assert.equal(session.getState().transfer.presentation, null);
+  const requestId = requests[0].requestId;
+  session.acceptPacket({ header: { type: 'status', status: 'crop-applied', geometryRevision: 1, cropRevision: 1, requestId }, jpeg: Buffer.alloc(0) });
+  assert.equal(session.getState().transfer.presentation?.platters.length, 2);
+  const frame = (sequence, width, height) => session.acceptPacket({ header: { type: 'frame', sequence, geometryRevision: 1, cropRevision: 1, requestId, width, height }, jpeg: image(width, height) });
+  assert.equal(frame(3, 800, 480), false); // Unapproved whole window.
+  assert.equal(frame(4, 112, 288), false); // Wave-only data cannot masquerade as the joint frame.
+  assert.equal(frame(5, 512, 288), true);
+  const published = session.getPhoneFrame(); assert.ok(published);
+  await analysis(6); assert.equal(requests.length, 1); // Tracking still uses wave coordinates.
+  platters = null; await analysis(7); await analysis(8);
+  assert.equal(requests.length, 2); assert.equal(session.getState().transfer.presentation, null);
+  assert.equal(session.getPhoneFrame(), null); assert.equal(frame(9, 512, 288), false);
+  session.acceptPacket({ header: { type: 'status', status: 'geometry-changed', geometryRevision: 2, cropRevision: 2 }, jpeg: Buffer.alloc(0) });
+  assert.equal(session.getState().transfer.presentation, null); assert.equal(session.getPhoneFrame(), null);
+  assert.doesNotMatch(JSON.stringify(session.getStats()), /presentation|platters|requestId|buffer/);
+  session.close();
+});

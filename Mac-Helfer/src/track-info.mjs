@@ -56,13 +56,12 @@ export class TrackInfo {
   getDisplayState() {
     const status = this.#stopping ? 'stopped' : this.#status;
     if (this.#demo) return { status, motion: { state: 'unknown', validForMs: 0 }, decks: [
-      { id: 1, title: 'Demo Track One', artist: 'Synthetische Demo', bpm: 123.4 },
-      { id: 2, title: 'Demo Track Two', artist: 'Synthetische Demo', bpm: 124.0 },
+      { id: 1, title: 'Demo Track One', artist: 'Synthetische Demo' },
+      { id: 2, title: 'Demo Track Two', artist: 'Synthetische Demo' },
     ] };
     const connected = status === 'connected', decks = this.#state.snapshot().decks.slice(0, 2);
     return { status, motion: playbackMotion(decks, connected), decks: decks.map(deck => ({ id: deck.id,
-      title: connected ? deck.title : '', artist: connected ? deck.artist : '',
-      bpm: connected && Number.isFinite(deck.bpm) && deck.bpm > 0 && deck.bpm <= 1000 ? deck.bpm : null })) };
+      title: connected ? deck.title : '', artist: connected ? deck.artist : '' })) };
   }
   getStats() {
     const report = this.#state.createReport();

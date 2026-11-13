@@ -1,6 +1,6 @@
 export const linkedMetadata = (value, fresh = true) => fresh && ['connected', 'demo'].includes(value?.status);
 import { normalizeCrop, selectionCrop } from './crop.js';
-import { FrameStats, paintFrame, nextPaint } from './frame-stats.js';
+import { FrameStats, paintPresentation, nextPaint } from './frame-stats.js';
 
 const MAX_JPEG_BYTES = 2 * 1024 * 1024;
 const FRESH_STATE_MS = 2500;
@@ -146,6 +146,8 @@ function bootstrap() {
     urls: [], qrUrl: null, qrVersion: 0, paintTimes: [] };
   const sourceCanvas = byId('source-canvas'), sourceContext = sourceCanvas.getContext('2d');
   const phoneCanvas = byId('phone-canvas'), phoneContext = phoneCanvas.getContext('2d');
+  const platterCanvases = [1, 2].map(id => { const canvas = byId(`platter-${id}`); return { canvas, context: canvas.getContext('2d') }; });
+  let hasPlatters = false;
   const previewDownloads = new Set();
   const frameStats = new FrameStats();
   let metricsPending = false, reportedForeground = 0;
@@ -163,7 +165,9 @@ function bootstrap() {
 
   function clearPhone() {
     frameStats.setActive(false);
-    client.hasFrame = false; client.paintTimes = [];
+    client.hasFrame = false; client.paintTimes = []; hasPlatters = false;
+    byId('platter-row').hidden = true;
+    for (const { canvas, context } of platterCanvases) context?.clearRect(0, 0, canvas.width, canvas.height);
     phoneContext?.clearRect(0, 0, phoneCanvas.width, phoneCanvas.height);
   }
 
@@ -225,6 +229,7 @@ function bootstrap() {
     byId('phone-status-copy').textContent = view.copy;
     byId('phone-overlay').hidden = view.showFrame;
     phoneCanvas.hidden = !view.showFrame;
+    byId('platter-row').hidden = !view.showFrame || !hasPlatters;
     const connectionState = byId('connection-state');
     connectionState.dataset.state = view.status === 'live' ? 'live' : ['stale', 'disconnected'].includes(view.status) ? 'error' : 'waiting';
     byId('connection-label').textContent = view.status === 'live' ? demo ? 'Demo-Bild' : client.state?.native?.status === 'source-idle' || client.state?.transfer?.unchanged === true ? 'Bild unverändert' : 'Live-Bild'
@@ -244,9 +249,8 @@ function bootstrap() {
       ? 'Trackdaten nicht verfügbar · Bildübertragung bleibt aktiv' : 'Warte auf Serato-Trackdaten …';
     for (const id of [1, 2]) {
       const deck = trackLinked ? trackInfo.decks?.find(deck => deck.id === id) : null;
-      byId(`track-title-${id}`).textContent = deck?.title || (trackLinked ? Number.isFinite(deck?.bpm) && deck.bpm > 0 ? 'Trackdaten werden geladen …' : 'Kein Track geladen' : '—');
+      byId(`track-title-${id}`).textContent = deck?.title || (trackLinked ? 'Kein Track geladen' : '—');
       byId(`track-artist-${id}`).textContent = deck?.artist || '';
-      byId(`track-bpm-${id}`).textContent = Number.isFinite(deck?.bpm) && deck.bpm > 0 && deck.bpm <= 1000 ? deck.bpm.toFixed(1) : '—';
     }
     if (!admin) return;
     const native = nativeMessage(client.state.native);
@@ -452,13 +456,14 @@ function bootstrap() {
               const skipped = client.phoneSequence > 0 && drawing - client.lastPaintAt < 2000
                 ? Math.max(0, metadata.sequence - client.phoneSequence - 1) : 0;
               const first = !client.hasFrame;
-              paintFrame(phoneCanvas, phoneContext, bitmap, metadata);
+              const previousPlatters = hasPlatters;
+              hasPlatters = paintPresentation(phoneCanvas, phoneContext, platterCanvases, bitmap, metadata, client.state?.transfer?.presentation);
               frameStats.setActive(true);
               frameStats.record({ ...timing, renderWaitMs: drawing - waiting, drawMs: Math.max(0, performance.now() - drawing) }, skipped);
               client.phoneSequence = metadata.sequence; client.phoneGeometry = metadata.geometryRevision;
               client.phoneCrop = metadata.cropRevision; client.hasFrame = true;
               client.lastPaintAt = performance.now(); client.paintTimes.push(client.lastPaintAt);
-              if (first) refresh();
+              if (first || previousPlatters !== hasPlatters) refresh();
               return false;
             } });
         } catch { /* The next latest frame may recover; stale output is covered. */ }
