@@ -25,6 +25,7 @@ struct ConnectionLink {
         guard let url = parts.url else { return nil }
         return ConnectionLink(url: url)
     }
+    
     func allowsRequest(to candidate: URL) -> Bool {
         guard let from = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let to = URLComponents(url: candidate, resolvingAgainstBaseURL: false) else { return false }

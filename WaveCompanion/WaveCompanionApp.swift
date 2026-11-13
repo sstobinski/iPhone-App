@@ -61,11 +61,13 @@ struct CompanionView: View {
             Button("Neue Verbindung") { disconnect() }; Button("Schließen", role: .cancel) { errorMessage = nil }
         } message: { Text(errorMessage ?? "") }
     }
+    
     private func connect(_ value: String) {
         guard let next = ConnectionLink.parse(value) else {
             errorMessage = "Bitte den aktuellen iPhone-QR-Code oder vollständigen lokalen Verbindungslink aus dem Mac-Helfer verwenden."; return
         }
         input = ""; errorMessage = nil; SavedConnection.save(next); link = next
     }
+    
     private func disconnect() { SavedConnection.clear(); link = nil; errorMessage = nil; UIApplication.shared.isIdleTimerDisabled = false }
 }

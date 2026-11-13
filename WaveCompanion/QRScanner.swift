@@ -16,6 +16,7 @@ final class CameraPreview: UIView {
         }
     }
 }
+
 struct QRScanner: UIViewRepresentable {
     let found: (String) -> Void
     let failure: (String) -> Void

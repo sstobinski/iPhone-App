@@ -83,6 +83,7 @@ final class NativeFrameRenderer {
     func show(_ image: CGImage) { last = image; view?.image = UIImage(cgImage: image) }
     func clear() { last = nil; view?.image = nil }
 }
+
 @MainActor
 final class NativeImageSurface: UIView {
     let imageView = UIImageView()
@@ -94,6 +95,7 @@ final class NativeImageSurface: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func layoutSubviews() { super.layoutSubviews(); imageView.frame = bounds }
 }
+
 @MainActor
 struct NativeFrameView: UIViewRepresentable {
     let renderer: NativeFrameRenderer
