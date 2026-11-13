@@ -51,3 +51,49 @@ final class NativeProtocolTests: XCTestCase {
         }
     }
 }
+
+final class NativePerformanceTests: XCTestCase {
+    func testValidLongPollFramesDoNotWaitForASecondDisplayClock() {
+        XCTAssertEqual(FrameFetchPacing.delay(after: .accepted, elapsed: 0.014), 0)
+        XCTAssertEqual(FrameFetchPacing.delay(after: .accepted, elapsed: 0.030), 0)
+        XCTAssertEqual(FrameFetchPacing.delay(after: .accepted, elapsed: 0), 1.0 / 120.0, accuracy: 0.000001)
+        XCTAssertEqual(FrameFetchPacing.delay(after: .unchanged, elapsed: 0.5), 0)
+        XCTAssertEqual(FrameFetchPacing.delay(after: .unchanged, elapsed: 0), 0.05)
+        XCTAssertEqual(FrameFetchPacing.delay(after: .failed, elapsed: 0), 0.1)
+        XCTAssertEqual(FrameFetchPacing.delay(after: .inactive, elapsed: 0), 0.25)
+    }
+    func testMotionEvidenceExpiresEvenWhenStateUpdatesStop() {
+        var counter = MovingPlaybackCounter()
+        counter.update(at: 0, visible: true, evidenceForMs: 500)
+        counter.recordFrame(at: 0.1, visible: true)
+        counter.update(at: 1, visible: true)
+        counter.recordFrame(at: 2, visible: true)
+        XCTAssertEqual(counter.milliseconds, 500, accuracy: 0.000001)
+        XCTAssertEqual(counter.frames, 1)
+    }
+    func testPlaybackCountersExcludeHiddenAndStationaryGaps() {
+        var counter = MovingPlaybackCounter()
+        counter.update(at: 0, visible: true, evidenceForMs: 500)
+        counter.recordFrame(at: 0.1, visible: true)
+        counter.update(at: 0.2, visible: false)
+        counter.update(at: 10, visible: false)
+        counter.update(at: 10, visible: true, evidenceForMs: 500)
+        counter.recordFrame(at: 10.1, visible: true)
+        counter.update(at: 10.2, visible: false)
+        XCTAssertEqual(counter.milliseconds, 400, accuracy: 0.000001)
+        XCTAssertEqual(counter.frames, 2)
+    }
+    func testAnImageBecomesMeasurableOnlyAfterTheFirstVisibleFrame() {
+        var counter = MovingPlaybackCounter()
+        counter.update(at: 0, visible: false, evidenceForMs: 500)
+        counter.recordFrame(at: 0.1, visible: true)
+        XCTAssertEqual(counter.frames, 0)
+        counter.recordFrame(at: 0.2, visible: true)
+        XCTAssertEqual(counter.frames, 1)
+        XCTAssertEqual(counter.milliseconds, 100, accuracy: 0.000001)
+        counter.update(at: 0.3, visible: true, evidenceForMs: 0)
+        counter.recordFrame(at: 0.4, visible: true)
+        XCTAssertEqual(counter.frames, 1)
+        XCTAssertEqual(counter.milliseconds, 200, accuracy: 0.000001)
+    }
+}
